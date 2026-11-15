@@ -1,0 +1,363 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Criar o projeto do app
+        run: |
+          mkdir -p app/src/main/java/com/exemplo/alertacaptcha app/src/main/res/drawable-nodpi
+          cat > settings.gradle.kts << 'EOF_ARQ'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "AlertaCaptcha"
+          include(":app")
+          EOF_ARQ
+          cat > build.gradle.kts << 'EOF_ARQ'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_ARQ
+          cat > gradle.properties << 'EOF_ARQ'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF_ARQ
+          cat > app/build.gradle.kts << 'EOF_ARQ'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.exemplo.alertacaptcha"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.exemplo.alertacaptcha"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+
+          dependencies {
+              implementation("org.opencv:opencv:4.9.0")
+          }
+          EOF_ARQ
+          cat > app/src/main/AndroidManifest.xml << 'EOF_ARQ'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+
+              <application
+                  android:label="Alerta Captcha"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".ScreenWatchService"
+                      android:exported="false"
+                      android:foregroundServiceType="mediaProjection" />
+              </application>
+          </manifest>
+          EOF_ARQ
+          cat > app/src/main/java/com/exemplo/alertacaptcha/MainActivity.kt << 'EOF_ARQ'
+          package com.exemplo.alertacaptcha
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+
+              private val reqCaptura = 1
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val texto = TextView(this).apply {
+                      text = "1) Toque em Iniciar e aceite a captura de tela.\n" +
+                          "2) Volte para o jogo. O app avisa com som e vibração quando o captcha aparecer.\n\n" +
+                          "O app só avisa, não clica em nada."
+                      textSize = 16f
+                  }
+                  val iniciar = Button(this).apply {
+                      text = "Iniciar vigia"
+                      setOnClickListener { pedirCaptura() }
+                  }
+                  val parar = Button(this).apply {
+                      text = "Parar"
+                      setOnClickListener {
+                          stopService(Intent(this@MainActivity, ScreenWatchService::class.java))
+                      }
+                  }
+                  setContentView(LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(48, 96, 48, 48)
+                      addView(texto)
+                      addView(iniciar)
+                      addView(parar)
+                  })
+
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+                  }
+              }
+
+              private fun pedirCaptura() {
+                  val mpm = getSystemService(MediaProjectionManager::class.java)
+                  startActivityForResult(mpm.createScreenCaptureIntent(), reqCaptura)
+              }
+
+              @Deprecated("Deprecated in Java")
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == reqCaptura && resultCode == RESULT_OK && data != null) {
+                      val i = Intent(this, ScreenWatchService::class.java)
+                          .putExtra("code", resultCode)
+                          .putExtra("data", data)
+                      startForegroundService(i)
+                  }
+              }
+          }
+          EOF_ARQ
+          cat > app/src/main/java/com/exemplo/alertacaptcha/ScreenWatchService.kt << 'EOF_ARQ'
+          package com.exemplo.alertacaptcha
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
+          import android.graphics.PixelFormat
+          import android.hardware.display.DisplayManager
+          import android.hardware.display.VirtualDisplay
+          import android.media.AudioManager
+          import android.media.ImageReader
+          import android.media.ToneGenerator
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.HandlerThread
+          import android.os.IBinder
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import org.opencv.android.OpenCVLoader
+          import org.opencv.android.Utils
+          import org.opencv.core.Core
+          import org.opencv.core.Mat
+          import org.opencv.core.Rect
+          import org.opencv.core.Size
+          import org.opencv.imgproc.Imgproc
+
+          class ScreenWatchService : Service() {
+
+              // ----- configurações -----
+              private val limiar = 0.75          // se não detectar, baixe (0.65). Se der alarme falso, suba (0.85)
+              private val intervaloMs = 1000L    // verificação a cada 1 segundo
+              private val repetirMs = 5000L      // repete o aviso a cada 5 s enquanto o captcha estiver na tela
+              private val escalas = doubleArrayOf(0.3, 0.4, 0.5, 0.6, 0.7, 0.85, 1.0, 1.2, 1.5, 1.8, 2.2)
+              // -------------------------
+
+              private var projection: MediaProjection? = null
+              private var reader: ImageReader? = null
+              private var display: VirtualDisplay? = null
+              private lateinit var thread: HandlerThread
+              private lateinit var bg: Handler
+              private var modelo: Mat? = null
+              private var ultimoAviso = 0L
+              private var rodando = false
+              private var largura = 0
+              private var altura = 0
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (rodando || intent == null) return START_NOT_STICKY
+
+                  criarCanal()
+                  val notif = montarNotificacao("Vigiando a tela...")
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(1, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+                  } else {
+                      startForeground(1, notif)
+                  }
+
+                  if (!OpenCVLoader.initLocal()) {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+
+                  thread = HandlerThread("vigia").also { it.start() }
+                  bg = Handler(thread.looper)
+
+                  // template em tons de cinza
+                  val bmp = BitmapFactory.decodeResource(resources, R.drawable.template_captcha)
+                  val m = Mat()
+                  Utils.bitmapToMat(bmp, m)
+                  Imgproc.cvtColor(m, m, Imgproc.COLOR_RGBA2GRAY)
+                  modelo = m
+
+                  val code = intent.getIntExtra("code", 0)
+                  val data = intent.getParcelableExtra<Intent>("data") ?: return START_NOT_STICKY
+                  val mpm = getSystemService(MediaProjectionManager::class.java)
+                  projection = mpm.getMediaProjection(code, data)
+                  projection?.registerCallback(object : MediaProjection.Callback() {
+                      override fun onStop() { stopSelf() }
+                  }, bg)
+
+                  // captura em metade da resolução (mais leve)
+                  val dm = resources.displayMetrics
+                  largura = dm.widthPixels / 2
+                  altura = dm.heightPixels / 2
+                  reader = ImageReader.newInstance(largura, altura, PixelFormat.RGBA_8888, 2)
+                  display = projection?.createVirtualDisplay(
+                      "vigia", largura, altura, dm.densityDpi,
+                      DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                      reader!!.surface, null, bg
+                  )
+
+                  rodando = true
+                  bg.post(object : Runnable {
+                      override fun run() {
+                          if (!rodando) return
+                          try { verificar() } catch (_: Exception) { }
+                          bg.postDelayed(this, intervaloMs)
+                      }
+                  })
+                  return START_NOT_STICKY
+              }
+
+              private fun verificar() {
+                  val img = reader?.acquireLatestImage() ?: return
+                  val tela = Mat()
+                  try {
+                      val plano = img.planes[0]
+                      val pixelStride = plano.pixelStride
+                      val larguraReal = plano.rowStride / pixelStride
+                      val bmp = Bitmap.createBitmap(larguraReal, altura, Bitmap.Config.ARGB_8888)
+                      bmp.copyPixelsFromBuffer(plano.buffer)
+                      val cheio = Mat()
+                      Utils.bitmapToMat(bmp, cheio)
+                      Mat(cheio, Rect(0, 0, largura, altura)).copyTo(tela)
+                      cheio.release()
+                      bmp.recycle()
+                  } finally {
+                      img.close()
+                  }
+                  Imgproc.cvtColor(tela, tela, Imgproc.COLOR_RGBA2GRAY)
+
+                  var melhor = 0.0
+                  val base = modelo ?: return
+                  for (e in escalas) {
+                      val w = (base.cols() * e).toInt()
+                      val h = (base.rows() * e).toInt()
+                      if (w < 12 || h < 6 || w >= tela.cols() || h >= tela.rows()) continue
+                      val t = Mat()
+                      Imgproc.resize(base, t, Size(w.toDouble(), h.toDouble()), 0.0, 0.0, Imgproc.INTER_AREA)
+                      val res = Mat()
+                      Imgproc.matchTemplate(tela, t, res, Imgproc.TM_CCOEFF_NORMED)
+                      val mm = Core.minMaxLoc(res)
+                      if (mm.maxVal > melhor) melhor = mm.maxVal
+                      t.release()
+                      res.release()
+                  }
+                  tela.release()
+
+                  val agora = System.currentTimeMillis()
+                  if (melhor >= limiar && agora - ultimoAviso >= repetirMs) {
+                      ultimoAviso = agora
+                      avisar()
+                  }
+                  // mostra a pontuação na notificação (ajuda a regular o limiar)
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.notify(1, montarNotificacao("Vigiando... correspondência: %.2f".format(melhor)))
+              }
+
+              private fun avisar() {
+                  ToneGenerator(AudioManager.STREAM_ALARM, 100)
+                      .startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 1500)
+                  val v = getSystemService(Vibrator::class.java)
+                  v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 400, 200, 400, 200, 400), -1))
+              }
+
+              private fun criarCanal() {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(
+                      NotificationChannel("vigia", "Vigia do captcha", NotificationManager.IMPORTANCE_LOW)
+                  )
+              }
+
+              private fun montarNotificacao(texto: String): Notification =
+                  Notification.Builder(this, "vigia")
+                      .setContentTitle("Alerta Captcha")
+                      .setContentText(texto)
+                      .setSmallIcon(android.R.drawable.ic_menu_view)
+                      .setOngoing(true)
+                      .build()
+
+              override fun onDestroy() {
+                  rodando = false
+                  display?.release()
+                  reader?.close()
+                  projection?.stop()
+                  modelo?.release()
+                  if (::thread.isInitialized) thread.quitSafely()
+                  super.onDestroy()
+              }
+          }
+          EOF_ARQ
+          echo 'iVBORw0KGgoAAAANSUhEUgAAAQoAAAAcCAIAAAAWUWasAAAWfmNhQlgAABZ+anVtYgAAAB5qdW1kYzJwYQARABCAAACqADibcQNjMnBhAAAAFlhqdW1iAAAAR2p1bWRjMm1hABEAEIAAAKoAOJtxA3VybjpjMnBhOjRiMGQ2NjlkLWJhYjAtNGIzMi1iMjEzLThkMTcwZjMyMzhmYwAAAAOTanVtYgAAAClqdW1kYzJhcwARABCAAACqADibcQNjMnBhLmFzc2VydGlvbnMAAAAAuGp1bWIAAABEanVtZGNib3IAEQAQgAAAqgA4m3ETYzJwYS5pbmdyZWRpZW50LnYzAAAAABhjMnNomSp1siAj73wtGz8H2ukwhgAAAGxjYm9yo2lkYzpmb3JtYXRpaW1hZ2UvcG5namluc3RhbmNlSUR4LHhtcDppaWQ6OTA5NTNkYjktNDUzZS00YWM3LTljZmEtOGI3MjNiMWJkOWJkbHJlbGF0aW9uc2hpcGhwYXJlbnRPZgAAAeJqdW1iAAAAQWp1bWRjYm9yABEAEIAAAKoAOJtxE2MycGEuYWN0aW9ucy52MgAAAAAYYzJzaOtXhV5W0+NeVPkopykt+QMAAAGZY2JvcqJnYWN0aW9uc4KiZmFjdGlvbmtjMnBhLm9wZW5lZGpwYXJhbWV0ZXJzoWtpbmdyZWRpZW50c4GiY3VybHgtc2VsZiNqdW1iZj1jMnBhLmFzc2VydGlvbnMvYzJwYS5pbmdyZWRpZW50LnYzZGhhc2hYILf45JS4+2bG35wRU554h3ZqVs0gomYIqGR1/tQuYi2JpGZhY3Rpb254HWNvbS5hbnRocm9waWMuY2xhdWRlLnByb3ZpZGVkanBhcmFtZXRlcnOheB9jb20uYW50aHJvcGljLm9yaWdpbi1jb25maWRlbmNlZ3Vua25vd25rZGVzY3JpcHRpb254ZkNsYXVkZSBwcm92aWRlZCB0aGlzIGZpbGUgYXQgdGhlIHJlcXVlc3Qgb2YgYSB1c2VyIGFuZCBtYXkgaGF2ZSBjcmVhdGVkIG9yIG1vZGlmaWVkIHRoZSBmaWxlIGNvbnRlbnRzLm1zb2Z0d2FyZUFnZW50oWRuYW1lZkNsYXVkZXJhbGxBY3Rpb25zSW5jbHVkZWT1AAAAyGp1bWIAAABAanVtZGNib3IAEQAQgAAAqgA4m3ETYzJwYS5oYXNoLmRhdGEAAAAAGGMyc2i6NQtBd1+CXXKLykOA43pmAAAAgGNib3KlY2FsZ2ZzaGEyNTZjcGFkTQAAAAAAAAAAAAAAAABkaGFzaFggpBs5UY1vUESbtNendqJ/0QRsB/05+4bEzFyNsTm/Mk9kbmFtZW5qdW1iZiBtYW5pZmVzdGpleGNsdXNpb25zgaJlc3RhcnQYIWZsZW5ndGgZFooAAAI+anVtYgAAACdqdW1kYzJjbAARABCAAACqADibcQNjMnBhLmNsYWltLnYyAAAAAg9jYm9ypWNhbGdmc2hhMjU2aXNpZ25hdHVyZXhNc2VsZiNqdW1iZj0vYzJwYS91cm46YzJwYTo0YjBkNjY5ZC1iYWIwLTRiMzItYjIxMy04ZDE3MGYzMjM4ZmMvYzJwYS5zaWduYXR1cmVqaW5zdGFuY2VJRHgseG1wOmlpZDoyMzJkMWI5Zi0zY2JiLTQyZjYtYmFiNi01Njk2ZjE1MTk3NWVyY3JlYXRlZF9hc3NlcnRpb25zg6JjdXJseC1zZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmluZ3JlZGllbnQudjNkaGFzaFggt/jklLj7ZsbfnBFTnniHdmpWzSCiZgioZHX+1C5iLYmiY3VybHgqc2VsZiNqdW1iZj1jMnBhLmFzc2VydGlvbnMvYzJwYS5hY3Rpb25zLnYyZGhhc2hYIKWstpAVdv7AM/CCl6heXEwQ2XU2tOgXrKXk3RwCP95lomN1cmx4KXNlbGYjanVtYmY9YzJwYS5hc3NlcnRpb25zL2MycGEuaGFzaC5kYXRhZGhhc2hYIFHX0k+PnLG3OQVIe2ld4qSlN0gDW/k2o8pYy2JSOOzMdGNsYWltX2dlbmVyYXRvcl9pbmZvo2RuYW1lb0FudGhyb3BpYyBGaWxlc2d2ZXJzaW9uZTEuMC4wa3NwZWNWZXJzaW9uZTIuNC4wAAAQOGp1bWIAAAAoanVtZGMyY3MAEQAQgAAAqgA4m3EDYzJwYS5zaWduYXR1cmUAAAAQCGNib3LShFkCEqIBJhghWQIKMIICBjCCAY2gAwIBAgIUQOWgCu7COdC+uIP6BkIFPWdVEwAwCgYIKoZIzj0EAwMwSTEXMBUGA1UEChMOQW50aHJvcGljLCBQQkMxLjAsBgNVBAMTJUFudGhyb3BpYyBDb250ZW50IENyZWRlbnRpYWxzIFJvb3QgQ0EwHhcNMjYwODA3MTg0MzU2WhcNMjgwODA2MTk0MzU2WjBEMRcwFQYDVQQKEw5BbnRocm9waWMsIFBCQzEpMCcGA1UEAxMgQW50aHJvcGljIENsYXVkZSBDb250ZW50IFNpZ25pbmcwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASYegpry1AYBRTVNL1CpTlbROnY3dey+UrsF9C3phYrATN3ZHf93Mo8RQN0KOUuOn19P4oWNFWe5n2/She9N7eTo1gwVjAOBgNVHQ8BAf8EBAMCB4AwFQYDVR0lBA4wDAYKKwYBBAGD6F4CATAMBgNVHRMBAf8EAjAAMB8GA1UdIwQYMBaAFM5R4gSBTmRbI/jjxM+aPpzB11zCMAoGCCqGSM49BAMDA2cAMGQCMDFzHRSeAXrSy1WOzkbhPZ6Km2wGTmZ/2gK18k8BQGXyqz88Rdrz6CTX9flAnYNVxgIwcF9c3fVhqmJKpi+UhasNUMko69cyX6STPfta3Q8EjyzDjzoyrol46FP6VFHhvUcJoWNwYWRZDZ4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
