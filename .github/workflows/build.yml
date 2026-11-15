@@ -388,7 +388,9 @@ jobs:
           5hhgFkBa7nscrP4Aj6+eSiF5advRU1ObMPc/lC5241LXVAr52UufTE3yX7yL6T++aRf/0/oTZUJQ
           aGN2n80AAAAASUVORK5CYII=
           EOF_B64
-          convert "59arcanine1600x1200-3.jpg" -gravity center -crop 1200x1200+0+0 +repage -resize 192x192 app/src/main/res/drawable-nodpi/icone.png || cp "59arcanine1600x1200-3.jpg" app/src/main/res/drawable-nodpi/icone.jpg
+          # convert "59arcanine1600x1200-3.jpg" -gravity center -crop 1200x1200+0+0 +repage -resize 192x192 app/src/main/res/drawable-nodpi/icone.png || cp "59arcanine1600x1200-3.jpg" app/src/main/res/drawable-nodpi/iconep.jpg
+          python3 -m pip install -q --break-system-packages pillow || python3 -m pip install -q pillow
+          python3 -c "import glob; from PIL import Image; f=(glob.glob('*.jpg')+glob.glob('*.jpeg')+glob.glob('*.png'))[0]; im=Image.open(f).convert('RGB'); w,h=im.size; s=min(w,h); l=(w-s)//2; t=(h-s)//2; im.crop((l,t,l+s,t+s)).resize((192,192)).save('app/src/main/res/drawable-nodpi/icone.png')"
 
       - name: Compilar
         run: gradle assembleDebug --no-daemon
