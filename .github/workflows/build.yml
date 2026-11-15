@@ -86,7 +86,7 @@ jobs:
               <uses-permission android:name="android.permission.VIBRATE" />
 
               <application
-                  android:label="Alerta Captcha" android:icon="@drawable/icone"
+                  android:label="Alerta Captcha"
                   android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
                   <activity
@@ -210,7 +210,7 @@ jobs:
               private val limiar = 0.75          // se não detectar, baixe (0.65). Se der alarme falso, suba (0.85)
               private val intervaloMs = 1000L    // verificação a cada 1 segundo
               private val repetirMs = 5000L      // repete o aviso a cada 5 s enquanto o captcha estiver na tela
-              private val escalas = doubleArrayOf(0.3, 0.4, 0.5, 0.6, 0.7, 0.85, 1.0, 1.2, 1.5, 1.8, 2.2)
+              private val escalas = doubleArrayOf(0.3, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7, 0.85, 1.0, 1.2, 1.5)
               // -------------------------
 
               private var projection: MediaProjection? = null
@@ -362,35 +362,61 @@ jobs:
           }
           EOF_ARQ
           base64 -d > app/src/main/res/drawable-nodpi/template_captcha.png << 'EOF_B64'
-          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
-          aGN2n80AAAAASUVORK5CYII=
+          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
+          iq8R5GtVpeJ/NLkTFrAe35YAAAAASUVORK5CYII=
           EOF_B64
-          # convert "59arcanine1600x1200-3.jpg" -gravity center -crop 1200x1200+0+0 +repage -resize 192x192 app/src/main/res/drawable-nodpi/icone.png || cp "59arcanine1600x1200-3.jpg" app/src/main/res/drawable-nodpi/iconep.jpg
-          python3 -m pip install -q --break-system-packages pillow || python3 -m pip install -q pillow
-          python3 -c "import glob; from PIL import Image; f=(glob.glob('*.jpg')+glob.glob('*.jpeg')+glob.glob('*.png'))[0]; im=Image.open(f).convert('RGB'); w,h=im.size; s=min(w,h); l=(w-s)//2; t=(h-s)//2; im.crop((l,t,l+s,t+s)).resize((192,192)).save('app/src/main/res/drawable-nodpi/icone.png')"
+          cat > make_icon.py << 'EOF_PY'
+          import glob
+          from PIL import Image
+          f = (glob.glob('*.jpg') + glob.glob('*.jpeg') + glob.glob('*.png'))[0]
+          im = Image.open(f).convert('RGB')
+          w, h = im.size
+          s = min(w, h)
+          l = (w - s) // 2
+          t = (h - s) // 2
+          im.crop((l, t, l + s, t + s)).resize((192, 192)).save('app/src/main/res/drawable-nodpi/icone.png')
+          EOF_PY
+          python3 -c "import PIL" 2>/dev/null || python3 -m pip install -q --break-system-packages pillow || true
+          if python3 make_icon.py; then
+            sed -i 's|android:label="Alerta Captcha"|android:label="Alerta Captcha" android:icon="@drawable/icone"|' app/src/main/AndroidManifest.xml
+          fi
 
       - name: Compilar
         run: gradle assembleDebug --no-daemon
